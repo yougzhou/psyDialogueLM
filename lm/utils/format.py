@@ -1,4 +1,5 @@
 import json
+import pandas as pd
 
 
 def read_json(data_path):
@@ -12,3 +13,7 @@ def save_json(data, save_path):
     with open(save_path, 'w', encoding='utf-8') as f:
         json.dump(data, save_path, ensure_ascii=False, indent=1)
         f.close()
+
+
+def read_csv(data_path):
+    return pd.read_csv(data_path)

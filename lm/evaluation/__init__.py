@@ -1,4 +1,4 @@
-from .core import GLMEvaluator
+from .core import GLMEvaluator, LLaMAEvaluator, BloomzEvaluator, BaiChuanEvaluator, EduChatEvaluator
 
 def get_evaluator(args):
     if 'glm' in args.model_name:
@@ -12,7 +12,7 @@ def get_evaluator(args):
     elif 'baichuan' in args.model_name:
         evaluator = BaiChuanEvaluator(args)
     elif 'educhat' in args.model_name:
-        evaluator = EduChatEvalutor(args)
+        evaluator = EduChatEvaluator(args)
     elif 'qianwen' in args.model_name:
         evaluator = QianWenEvaluator(args)
     elif 'yiyan' in args.model_name:
