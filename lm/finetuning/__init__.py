@@ -17,7 +17,7 @@ def get_tokenizer(args):
     if 'glm' in model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, cache_dir=args.cache_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, cache_dir=args.cache_dir, use_fast=False)
     return tokenizer
 
 

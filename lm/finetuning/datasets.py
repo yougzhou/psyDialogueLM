@@ -42,6 +42,7 @@ class PsyDialogueDataset(Dataset):
                 continue
             assert 0 < len(input_ids) <= 2048
             self.data.append(input_ids)
+            self.no_loss_spans.append(no_loss_spans)
 
     def __getitem__(self, index):
         data = copy.deepcopy(self.data[index])
@@ -51,7 +52,7 @@ class PsyDialogueDataset(Dataset):
         label = copy.deepcopy(data)
         for no_loss_span in no_loss_spans:
             label[no_loss_span[0]: no_loss_span[1]] = -100
-        return data, attn_mask, label
+        return {'input_ids': data, 'attention_mask': attn_mask, 'labels': label}
 
     def __len__(self):
         return len(self.data)
