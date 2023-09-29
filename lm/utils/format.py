@@ -2,6 +2,13 @@ import json
 import pandas as pd
 
 
+SPECIAL_TOKENS = {
+    'Patient': '<|patient|>',
+    'Doctor': '<|doctor|>',
+    'System': '<|system|>'
+}
+
+
 def read_json(data_path):
     with open(data_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -17,3 +24,8 @@ def save_json(data, save_path):
 
 def read_csv(data_path):
     return pd.read_csv(data_path)
+
+
+def data_collator(samples):
+    print(samples)
+    exit()
