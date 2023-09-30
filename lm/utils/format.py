@@ -26,6 +26,24 @@ def read_csv(data_path):
     return pd.read_csv(data_path)
 
 
-def data_collator(samples):
-    print(samples)
-    exit()
+def format_system_prefix(prefix, eos_token):
+    return "{}{}{}".format(
+        SPECIAL_TOKENS["System"],
+        prefix,
+        eos_token,
+    )
+
+
+def format_pairs(
+    pairs: list[str],
+    eos_token: str,
+    add_initial_reply_token: bool = False,
+) -> list[str]:
+    assert isinstance(pairs, list)
+    conversations = [
+        "{}{}{}".format(SPECIAL_TOKENS["Patient" if i % 2 == 0 else "Doctor"], pairs[i], eos_token)
+        for i in range(len(pairs))
+    ]
+    if add_initial_reply_token:
+        conversations.append(SPECIAL_TOKENS["Doctor"])
+    return conversations

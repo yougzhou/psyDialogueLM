@@ -6,7 +6,7 @@ if [ $# != 1 ]; then
 fi
 run_conf=$1
 source ${run_conf}
-if [ ${log_dir:-} != '' ]; then
+if [ ${log_dir:-""} != '' ]; then
   rm ${log_dir}/log.*
 fi
 export PYTHONPATH=$(dirname "$0")/..:${PYTHONPATH:-}

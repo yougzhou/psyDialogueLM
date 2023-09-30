@@ -1,5 +1,4 @@
 #!/bin/bash
-set -ux
 if [ $# == 1 ]; then
   run_conf=$1
   source ${run_conf}
@@ -9,7 +8,7 @@ elif [ $# > 1 ]; then
 fi
 export CUDA_VISIBLE_DEVICES=0
 mkdir -p ${save_dir}
-if [ ${log_dir:-} != "" ]; then
+if [ ${log_dir:-""} != "" ]; then
   mkdir -p ${log_dir}
 fi
 python ./lm/scripts/finetune.py \
