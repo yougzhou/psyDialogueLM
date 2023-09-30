@@ -2,14 +2,16 @@ import argparse
 import math
 
 from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq, set_seed
+from transformers.training_args import OptimizerNames
 from peft import get_peft_model, LoraConfig, TaskType
 
-from lm.utils import str2bool, print_args, SPECIAL_TOKENS, compute_metrics
-from lm.finetuning import get_tokenizer, get_model, get_dataset
+from lm.utils import str2bool, print_args, compute_metrics
+from lm.finetuning import get_tokenizer, get_model, get_dataset, tokenizer_sanity_check
 
 
 def setup_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--random_seed', type=int, default=29)
     parser.add_argument('--save_dir', type=str, default='./outputs')
     parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--data_dir', type=str, default='./data')
@@ -25,38 +27,50 @@ def setup_args():
 
 
 def main(args):
-    print_args(args)
+    if not args.deepspeed or args.local_rank == 0:
+        print_args(args)
+
+    output_dir = (
+        args.output_dir if args.output_dir else f'{args.model_name}-{args.log_dir}-finetuned'
+    )
+
+    optimizer = OptimizerNames.ADAMW_TORCH
 
     training_args = TrainingArguments(
-        output_dir=args.save_dir,
+        output_dir=output_dir,
         num_train_epochs=args.num_epochs,
         warmup_steps=args.warmup_steps,
-        learning_rate=args.learning_rate,
+        learning_rate=float(args.learning_rate),
         deepspeed=args.deepspeed_config if args.deepspeed else None,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        evaluation_strategy='steps',
-        weight_decay=0.01,
-        load_best_model_at_end=True,
-        save_steps=args.save_steps,
-        save_total_limit=4,
-        eval_steps=args.eval_steps,
+        optim=optimizer,
+        fp16=args.dtype in ['fp16', 'float16'],
+        local_rank=args.local_rank,
+        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        weight_decay=args.weight_decay,
+        max_grad_norm=args.max_grad_norm,
         logging_steps=args.log_steps,
-        report_to=['tensorboard']
+        save_total_limit=args.save_total_limit,
+        evaluation_strategy='steps',
+        eval_steps=args.eval_steps,
+        save_strategy=args.save_strategy,
+        save_steps=args.save_steps,
+        eval_accumulation_steps=args.eval_accumulation_steps,
+        resume_from_checkpoint=args.resume_from_checkpoint,
+        report_to=['tensorboard'] if args.log_tensorboard else None
     )
 
     set_seed(args.random_seed)
 
     tokenizer = get_tokenizer(args)
-    tokenizer.add_special_tokens({
-        'pad_token': tokenizer.pad_token,
-        'eos_token': tokenizer.eos_token
-    })
-    additional_special_tokens = (
-        [] if 'additional_special_tokens' not in tokenizer.special_tokens_map else tokenizer.special_tokens_map['additional_special_tokens']
+    if not args.deepspeed or args.local_rank == 0:
+        tokenizer_sanity_check(tokenizer)
+
+    collate_fn = DialogueDataCollator(
+        tokenizer
     )
-    additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
-    tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
 
     model = get_model(args)
     num_embeddings = model.get_input_embeddings().num_embeddings
@@ -66,11 +80,6 @@ def main(args):
         model.resize_token_embeddings(target_size)
 
     train_set, eval_set = get_dataset(args, tokenizer)
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer=tokenizer,
-        max_length=2048,
-        padding='longest'
-    )
 
     if args.lora:
         peft_config = LoraConfig(

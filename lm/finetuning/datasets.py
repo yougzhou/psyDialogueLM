@@ -1,5 +1,6 @@
 import copy
 import os.path
+from dataclasses import dataclass
 
 import torch
 from torch.utils.data import Dataset
@@ -56,3 +57,13 @@ class PsyDialogueDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+
+@dataclass
+class DialogueDataCollator:
+    def __init__(self, tokenizer, padding=True, max_length=None, mix_length_threshold=256, mix_probability=0.6, pad_to_multiple_of=None, samples_mixing=False):
+        self.tokenizer = tokenizer
+        self.padding = padding
+        self.max_length = max_length
+        self.mix_length_threshold = mix_length_threshold
+        self.mix_probability = mix_probability
