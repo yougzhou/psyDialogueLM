@@ -35,9 +35,9 @@ class Evaluator:
             if save_path:
                 item = {'response': response_str.strip(), 'target': target['content']}
                 result.append(item)
+        metrics = metric_computer(result)
         save_json(result, save_path)
         print('result is saved.')
-        metrics = metric_computer(result)
         return metrics
 
     def eval_subject(self, data_path, save_path):
@@ -174,20 +174,89 @@ class LLaMAEvaluator(Evaluator):
         else:
             self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir).half().cuda()
 
+
 class BloomzEvaluator(Evaluator):
     def __init__(self, args):
         super().__init__(args)
-        self.mdoel_name_or_path = os.path.join(self.cache_dir, 'bloomz_mt')
-        self.tokenizer = AutoTokenizer.from_pretrained(self.mdoel_name_or_path, cache_dir=self.cache_dir)
-        self.model = AutoModelForCausalLM.from_pretrained(self.mdoel_name_or_path, cache_dir=self.cache_dir).half().cuda()
+        self.model_name_or_path = os.path.join(self.cache_dir, 'bloomz_mt')
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir)
+        self.tokenizer.add_special_tokens({
+            'pad_token': self.tokenizer.eos_token,
+            'eos_token': self.tokenizer.eos_token
+        })
+        additional_special_tokens = (
+            [] if 'additional_special_tokens' not in self.tokenizer.special_tokens_map else
+            self.tokenizer.special_tokens_map[
+                'additional_special_tokens']
+        )
+        additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
+        self.tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
+        if 'dialogue' in args.subject:
+            with init_empty_weights():
+                self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path)
+                num_embeddings = self.model.get_input_embeddings().num_embeddings
+                if len(self.tokenizer) != num_embeddings:
+                    p = 16
+                    target_size = math.ceil(len(self.tokenizer) / p) * p
+                    self.model.resize_token_embeddings(target_size)
+            self.model = load_checkpoint_and_dispatch(self.model, checkpoint=self.checkpoint_file, device_map='auto')
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir).half().cuda()
 
 
 class BaiChuanEvaluator(Evaluator):
     def __init__(self, args):
         super().__init__(args)
         self.model_name_or_path = os.path.join(self.cache_dir, 'baichuan2-7b-base')
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, trust_remote_code=True, cache_dir=self.cache_dir)
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, trust_remote_code=True, cache_dir=self.cache_dir).half().cuda()
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir, trust_remote_code=True)
+        self.tokenizer.add_special_tokens({
+            'pad_token': self.tokenizer.eos_token,
+            'eos_token': self.tokenizer.eos_token
+        })
+        additional_special_tokens = (
+            [] if 'additional_special_tokens' not in self.tokenizer.special_tokens_map else
+            self.tokenizer.special_tokens_map[
+                'additional_special_tokens']
+        )
+        additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
+        self.tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
+        if 'dialogue' in args.subject:
+            with init_empty_weights():
+                self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, trust_remote_code=True)
+                num_embeddings = self.model.get_input_embeddings().num_embeddings
+                if len(self.tokenizer) != num_embeddings:
+                    p = 16
+                    target_size = math.ceil(len(self.tokenizer) / p) * p
+                    self.model.resize_token_embeddings(target_size)
+            self.model = load_checkpoint_and_dispatch(self.model, checkpoint=self.checkpoint_file, device_map='auto')
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, trust_remote_code=True, cache_dir=self.cache_dir).half().cuda()
+
+    def eval_dialogue(self, data_path, save_path):
+        metric_computer = MetricComputer(self.tokenizer)
+        raw_data = read_json(data_path)
+        result = []
+        for example in tqdm(raw_data):
+            inputs, target = self.format_inputs(example)
+            self.prompt_length = len(inputs)
+            inputs = self.tokenizer.encode(inputs, return_tensors='pt').to('cuda')
+            max_new_token = 256
+            outputs = self.model.generate(inputs, max_new_tokens=max_new_token)
+            response = self.tokenizer.decode(outputs[0])
+            response_str = self.extract_response(response)
+            if save_path:
+                item = {'response': response_str.strip(), 'target': target['content']}
+                result.append(item)
+        metrics = metric_computer(result)
+        save_json(result, save_path)
+        print('result is saved.')
+        return metrics
+
+    def extract_response(self, response):
+        response = response.split('<|doctor|>')[-1].strip()
+        doctor_str = re.sub(r'<.*?>', '', response)
+        return doctor_str
+
 
 
 class EduChatEvaluator(Evaluator):
@@ -205,7 +274,7 @@ class EduChatEvaluator(Evaluator):
         for row_index, row in tqdm(test_data.iterrows(), total=len(test_data)):
             question = self.format_example(row)
             inputs = {
-                'messages': [{"role":"system","content":"请问有什么可以帮助您的吗？"},{"role":"user","content":question}],
+                'messages': [{"role": "system","content": "请问有什么可以帮助您的吗？"}, {"role": "user", "content": question}],
                 'functionUse': 'chat'
             }
             response_str = requests.post(self.api, json=inputs).json()['response']

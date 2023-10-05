@@ -143,7 +143,7 @@ def read_json(data_path):
 
 def save_json(data, save_path):
     with open(save_path, 'w', encoding='utf-8') as f:
-        json.dump(data, save_path, ensure_ascii=False, indent=1)
+        json.dump(data, f, ensure_ascii=False, indent=1)
         f.close()
 
 
