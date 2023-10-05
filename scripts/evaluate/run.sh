@@ -7,12 +7,12 @@ elif [ $# > 1 ]; then
   echo "usage: bash $0 [run_conf]"
   exit -1
 fi
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 mkdir -p ${save_dir}
 if [ ${log_dir:-""} != "" ]; then
   mkdir -p ${log_dir}
 fi
-python ./lm/scripts/evaluate.py \
+python ./lm/scripts/evaluator.py \
   --model_name ${model_name} \
   --subject ${subject} \
   --data_dir ${data_dir} \

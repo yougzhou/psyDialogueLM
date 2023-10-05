@@ -1,12 +1,14 @@
 import os
+import math
 
+import torch
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
 from .datasets import PsyDialogueDataset
-from lm.utils import SPECIAL_TOKENS, create_dataset_entry_qa
+from lm.utils import SPECIAL_TOKENS, create_dataset_entry_qa, Metric
 
 model_path = {
-    'chatglm': 'chatglm_6b',
+    'chatglm': 'chatglm-6b',
     'llama': 'llama_hf',
     'baichuan': 'baichuan2-7b-base',
     'bloomz': 'bloomz_mt'
@@ -15,10 +17,7 @@ model_path = {
 
 def get_tokenizer(args):
     model_name_or_path = os.path.join(args.cache_dir, model_path[args.model_name])
-    if 'glm' in model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, cache_dir=args.cache_dir, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir, use_fast=False)
 
     tokenizer.add_special_tokens({
         'pad_token': tokenizer.pad_token,
@@ -38,7 +37,7 @@ def tokenizer_sanity_check(tokenizer):
     print('Tokenizer sanity check:')
     print(f'Type: {type(tokenizer).__name__}')
 
-    print('special_tokens_map:', tokenizer.specical_tokens_map)
+    print('special_tokens_map:', tokenizer.special_tokens_map)
 
     print(f'bos_token={tokenizer.bos_token}, bos_token_id={tokenizer.bos_token_id}')
     print(f'eos_token={tokenizer.eos_token}, eos_token_id={tokenizer.eos_token_id}')
@@ -50,7 +49,7 @@ def tokenizer_sanity_check(tokenizer):
         tokenizer.eos_token,
         use_system_tag=True,
         system_property_dropout=0,
-        system_add_length=True
+        system_add_length=False
     )
     in_text = ''.join(in_text)
 
@@ -62,25 +61,41 @@ def tokenizer_sanity_check(tokenizer):
 
     message_indices = []
     i = -1
-    for id in tr.inputs_ids:
+    for id in tr.input_ids:
         if id in (prompter_token_id, assistant_token_id):
             i += 1
         message_indices.append(i)
 
     print('encoding result:', tr)
-    for i, xs in enumerate(tr.inputs_ids):
+    for i, xs in enumerate(tr.input_ids):
         decoded = tokenizer.decode(xs)
         print(f'{i}: {xs} -> {decoded}')
 
     print('message_indices:', message_indices)
 
 
-def get_model(args):
+def get_model(args, tokenizer, pad_vocab_size_to_multiple_of=16):
+    dtype = torch.float32
+    if args.dtype in ['fp16', 'float16']:
+        dtype = torch.float16
+    elif args.dtype in ['bf16', 'bfloat16']:
+        dtype = torch.bfloat16
     model_name_or_path = os.path.join(args.cache_dir, model_path[args.model_name])
     if 'glm' in model_name_or_path:
-        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir)
+        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir, torch_dtype=dtype)
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, cache_dir=args.cache_dir)
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, cache_dir=args.cache_dir, torch_dtype=dtype)
+
+    num_embeddings = model.get_input_embeddings().num_embeddings
+    if len(tokenizer) != num_embeddings:
+        p = pad_vocab_size_to_multiple_of
+        target_size = math.ceil(len(tokenizer) / p) * p
+        model.resize_token_embeddings(target_size)
+        
+    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    params = sum([p.numel() for p in model_parameters])
+    print(f'Number of trainable parameters: {int(params / 1e6)}M')
+
     return model
 
 
@@ -89,3 +104,17 @@ def get_dataset(args, tokenizer):
     eval_set = PsyDialogueDataset(args.data_dir, tokenizer, data_type='eval')
     return train_set, eval_set
 
+
+def default_preprocess(eval_pred, ignore_negative_labels=True):
+    preds, labels = eval_pred.predictions, eval_pred.label_ids
+
+    if not ignore_negative_labels:
+        return preds, labels
+
+    mask = labels > 0
+    return preds[mask], labels[mask]
+
+
+def get_metrics(args, tokenizer):
+    metrics, preprocess_fns = [Metric], [default_preprocess]
+    return metrics, preprocess_fns

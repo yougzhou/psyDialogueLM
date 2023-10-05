@@ -7,7 +7,7 @@ from lm.utils import print_args
 
 def setup_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--subject', type=str, choices=['single_choice', 'multi_choice', 'case_qa', 'psy_dialog'])
+    parser.add_argument('--subject', type=str, choices=['single_choice', 'multi_choice', 'case_qa', 'dialogue'])
     parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--data_dir', type=str, default='./data')
     parser.add_argument('--save_dir', type=str, default='./outputs')
@@ -17,14 +17,17 @@ def setup_args():
 
 def main(args):
     print_args(args)
+    evaluator = get_evaluator(args)
     if 'choice' in args.subject:
         data_path = os.path.join(args.data_dir, args.subject, 'test.csv')
         save_path = os.path.join(args.save_dir, args.subject, f'{args.model_name}_result.csv')
-    else:
+        result = evaluator.eval_subject(data_path, save_path)
+    elif 'dialogue' in args.subject:
         data_path = os.path.join(args.data_dir, args.subject, 'test.json')
-        save_path = os.path.join(args.save_dir, args.subject, 'result.json')
-    evaluator = get_evaluator(args)
-    result = evaluator.eval_subject(data_path, save_path)
+        save_path = os.path.join(args.save_dir, args.subject, f'{args.model_name}_result.json')
+        result = evaluator.eval_dialogue(data_path, save_path)
+    else:
+        raise NotImplementedError
     print(result)
 
 

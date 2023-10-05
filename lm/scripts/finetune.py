@@ -1,27 +1,48 @@
 import argparse
-import math
+import os
+from functools import partial
 
-from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq, set_seed
+from transformers import TrainingArguments, Trainer, set_seed
 from transformers.training_args import OptimizerNames
 from peft import get_peft_model, LoraConfig, TaskType
 
-from lm.utils import str2bool, print_args, compute_metrics
-from lm.finetuning import get_tokenizer, get_model, get_dataset, tokenizer_sanity_check
+from lm.utils import str2bool, print_args, SYSTEM_PREFIX, compute_metrics, preprocess_logits_for_metrics
+from lm.finetuning import get_tokenizer, get_model, get_dataset, tokenizer_sanity_check, get_metrics
+from lm.finetuning.datasets import DialogueDataCollator
 
 
 def setup_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--log_tensorboard', type=str2bool, default=True)
+    parser.add_argument('--output_dir', type=str, default='./outputs')
+
+    parser.add_argument('--local_rank', type=int, default=-1)
+    parser.add_argument('--world_size', type=int, default=1)
+    parser.add_argument('--deepspeed', type=str2bool, default=False)
+    parser.add_argument('--resume_from_checkpoint', action='store_true')
+    parser.add_argument('--show_dataset_stats', type=str2bool, default=False)
+
     parser.add_argument('--random_seed', type=int, default=29)
-    parser.add_argument('--save_dir', type=str, default='./outputs')
     parser.add_argument('--model_name', type=str, required=True)
+    parser.add_argument('--dtype', type=str, default=None)
+    parser.add_argument('--gradient_checkpointing', type=str2bool, default=False)
+    parser.add_argument('--max_length', type=int, default=2048)
+
     parser.add_argument('--data_dir', type=str, default='./data')
     parser.add_argument('--cache_dir', type=str, default='../.cache')
     parser.add_argument('--lora', type=str2bool, default=True)
     parser.add_argument('--learning_rate', type=float, default=5e-5)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--per_device_train_batch_size', type=int, default=4)
+    parser.add_argument('--per_device_eval_batch_size', type=int, default=4)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
+    parser.add_argument('--warmup_steps', type=int, default=100)
+    parser.add_argument('--weight_decay', type=float, default=0.01)
+    parser.add_argument('--max_grad_norm', type=float, default=1)
     parser.add_argument('--num_epochs', type=int, default=5)
+    parser.add_argument('--save_strategy', type=str, default='steps')
     parser.add_argument('--eval_steps', type=int, default=200)
     parser.add_argument('--save_steps', type=int, default=400)
+    parser.add_argument('--save_total_limit', type=int, default=4)
     parser.add_argument('--log_steps', type=int, default=100)
     return parser.parse_args()
 
@@ -57,7 +78,6 @@ def main(args):
         eval_steps=args.eval_steps,
         save_strategy=args.save_strategy,
         save_steps=args.save_steps,
-        eval_accumulation_steps=args.eval_accumulation_steps,
         resume_from_checkpoint=args.resume_from_checkpoint,
         report_to=['tensorboard'] if args.log_tensorboard else None
     )
@@ -69,17 +89,16 @@ def main(args):
         tokenizer_sanity_check(tokenizer)
 
     collate_fn = DialogueDataCollator(
-        tokenizer
+        tokenizer,
+        max_length=args.max_length,
+        pad_to_multiple_of=16,
+        use_system_tag=True,
+        system_prefix=SYSTEM_PREFIX
     )
 
-    model = get_model(args)
-    num_embeddings = model.get_input_embeddings().num_embeddings
-    if len(tokenizer) != num_embeddings:
-        p = 16
-        target_size = math.ceil(len(tokenizer) / p) * p
-        model.resize_token_embeddings(target_size)
-
     train_set, eval_set = get_dataset(args, tokenizer)
+    metrics, preprocess_fns = get_metrics(args, tokenizer)
+    model = get_model(args, tokenizer)
 
     if args.lora:
         peft_config = LoraConfig(
@@ -93,18 +112,19 @@ def main(args):
         args=training_args,
         train_dataset=train_set,
         eval_dataset=eval_set,
-        data_collator=data_collator,
+        data_collator=collate_fn,
         tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
+        compute_metrics=partial(compute_metrics, metrics=metrics, preprocess_fns=preprocess_fns),
         preprocess_logits_for_metrics=preprocess_logits_for_metrics
     )
-
     trainer.train()
     trainer.save_model()
-    tokenizer.save_pretrained(args.output_dir)
+    tokenizer.save_pretrained(output_dir)
 
 
 if __name__ == '__main__':
     args = setup_args()
+    if args.deepspeed:
+        args.world_size = int(os.getenv('WORLD_SIZE', default=1))
     main(args)
 

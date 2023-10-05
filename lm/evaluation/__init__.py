@@ -1,4 +1,4 @@
-from .core import GLMEvaluator, LLaMAEvaluator, BloomzEvaluator, BaiChuanEvaluator, EduChatEvaluator
+from .ego import GLMEvaluator, LLaMAEvaluator, BloomzEvaluator, BaiChuanEvaluator, EduChatEvaluator
 
 def get_evaluator(args):
     if 'glm' in args.model_name:
