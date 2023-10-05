@@ -20,6 +20,10 @@ class Evaluator:
         self.prompt_length = None
         self.checkpoint_file = os.path.join('./packages/finetuned', args.model_name, 'pytorch_model.bin')
 
+    def eval_case(self, data_path, save_path):
+        raw_data = read_csv(data_path)
+        print(raw_data.head())
+
     def eval_dialogue(self, data_path, save_path):
         metric_computer = MetricComputer(self.tokenizer)
         raw_data = read_json(data_path)

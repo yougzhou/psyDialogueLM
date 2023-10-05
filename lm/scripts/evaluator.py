@@ -18,7 +18,7 @@ def setup_args():
 def main(args):
     print_args(args)
     evaluator = get_evaluator(args)
-    if 'choice' in args.subject:
+    if 'single_choice' in args.subject:
         data_path = os.path.join(args.data_dir, args.subject, 'test.csv')
         save_path = os.path.join(args.save_dir, args.subject, f'{args.model_name}_result.csv')
         result = evaluator.eval_subject(data_path, save_path)
@@ -26,6 +26,10 @@ def main(args):
         data_path = os.path.join(args.data_dir, args.subject, 'test.json')
         save_path = os.path.join(args.save_dir, args.subject, f'{args.model_name}_result.json')
         result = evaluator.eval_dialogue(data_path, save_path)
+    elif 'case_qa' in args.subject:
+        data_path = os.path.join(args.data_dir, args.subject, 'test.csv')
+        save_path = os.path.join(args.save_path, args.subject, f'{args.model_name}_result.json')
+        result = evaluator.eval_case(data_path, save_path)
     else:
         raise NotImplementedError
     print(result)
