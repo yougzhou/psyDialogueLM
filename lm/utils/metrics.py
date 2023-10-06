@@ -1,12 +1,17 @@
+import os.path
 import re
 from collections import defaultdict
+from time import sleep
+from tqdm import tqdm
 
+import openai
 import numpy as np
 import torch
 from nltk.translate.bleu_score import sentence_bleu
 from nltk.translate.meteor_score import meteor_score
-# from nltk.translate.nist_score import sentence_nist
 from rouge import Rouge
+
+from .format import read_txt
 
 
 def compute_metrics(eval_pred, preprocess_fns, metrics):
@@ -81,3 +86,61 @@ class MetricComputer:
         result['dist-2'] = self.compute_entropy(response)
         result = {k: round(v, 4) for k, v in result.items()}
         return result
+
+
+class AutoEvaluator:
+    def __init__(self, args):
+        self.evaluator = args.evaluator
+        self.model_name = args.evaluator_model
+        openai.api_key = args.api_key
+        openai.ori_key = args.ori_key
+        self.prompt_path = os.path.join('./packages/prompts', args.evaluator)
+
+    def preprocess(self, sample, prompt):
+        response, answer = sample['response'], sample['target']
+        prompt = prompt.replace('[Answer]', answer)
+        prompt = prompt.replace('[Response]', response)
+        prompt = [{'role': 'user', 'content': prompt}]
+        return prompt
+
+    def evaluate_score(self, inputs):
+        result = []
+        prompt = read_txt(self.prompt_path)
+        for sample in tqdm(inputs):
+            prompt = self.preprocess(sample, prompt)
+            response = None
+            timeout_count = 0
+            while response is None and timeout_count <= 30:
+                try:
+                    response = openai.ChatCompletion.create(
+                        model=self.model_name,
+                        messages=prompt,
+                        temperature=0.
+                    )
+                except Exception as msg:
+                    if 'timeout' in str(msg):
+                        timeout_count += 1
+                    sleep(5)
+                    continue
+            if response is None:
+                response_str = ''
+            else:
+                response_str = response['choices'][0]['message']['content']
+            response_str = response_str.strip()
+            if len(response_str) > 0:
+                score = self.extract_score(response_str)
+            else:
+                score = 0
+            result.append(score)
+        avg_score = sum(result) / len(result)
+        return avg_score
+
+    def extract_score(self, response_str):
+        pass
+
+    def __call__(self, inputs):
+        if self.evaluator == 'marking':
+            score = self.evaluate_score(inputs)
+            print(f'Average score: {score}')
+        else:
+            pass

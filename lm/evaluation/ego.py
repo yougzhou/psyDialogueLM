@@ -33,7 +33,9 @@ class Evaluator:
             if save_path:
                 item = {'response': response_str.strip(), 'target': target}
                 result.append(item)
-            save_json(result, save_path)
+        save_json(result, save_path)
+        return result
+
 
     def eval_dialogue(self, data_path, save_path):
         metric_computer = MetricComputer(self.tokenizer)

@@ -151,6 +151,12 @@ def read_csv(data_path):
     return pd.read_csv(data_path)
 
 
+def read_txt(data_path):
+    f = open(data_path, 'r', encoding='utf-8')
+    lines = f.readlines()
+    return ''.join(lines)
+
+
 def format_system_prefix(prefix, eos_token):
     return "{}{}{}".format(
         SPECIAL_TOKENS["System"],
