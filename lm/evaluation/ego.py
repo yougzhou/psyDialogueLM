@@ -21,8 +21,19 @@ class Evaluator:
         self.checkpoint_file = os.path.join('./packages/finetuned', args.model_name, 'pytorch_model.bin')
 
     def eval_case(self, data_path, save_path):
+        result = []
         raw_data = read_csv(data_path)
-        print(raw_data.head())
+        for row_index, row in tqdm(raw_data.iterrows(), total=len(raw_data)):
+            question, target = self.format_question(row)
+            inputs = self.tokenizer(question, return_tensors='pt').to('cuda')
+            max_new_tokens = 256
+            response = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+            response = self.tokenizer.decode(response[0]).strip()
+            response_str = self.extract_qa_answer(response)
+            if save_path:
+                item = {'response': response_str.strip(), 'target': target}
+                result.append(item)
+            save_json(result, save_path)
 
     def eval_dialogue(self, data_path, save_path):
         metric_computer = MetricComputer(self.tokenizer)
@@ -54,7 +65,7 @@ class Evaluator:
         for row_index, row in tqdm(test_data.iterrows(), total=len(test_data)):
             question = self.format_example(row)
             inputs = self.tokenizer(question, return_tensors='pt').to('cuda')
-            max_length=2048
+            max_length = 2048
             response = self.model.generate(**inputs, max_length=max_length)
             response_str = self.tokenizer.decode(response[0]).strip()
             if len(response_str) > 0:
@@ -86,7 +97,7 @@ class Evaluator:
 
     def format_inputs(self, inputs):
         inputs, target = inputs[:-1], inputs[-1]
-        prompt = '你是一个中文心理咨询主动化助手，下面是一些关于心理诊断的真实对话，请你扮演心理医生通过提问引导对患者进行诊断。'
+        prompt = '你是一个中文心理咨询智能化助手，下面是一些关于心理诊断的真实对话，请你扮演心理医生通过提问引导对患者进行诊断。'
         for utterance in inputs:
             if utterance['speaker'] == 'patient':
                 uttr_str = '<|patient|>' + utterance['content'] + self.tokenizer.eos_token
@@ -95,6 +106,11 @@ class Evaluator:
             prompt += uttr_str
         prompt += '<|doctor|>'
         return prompt, target
+
+    def format_question(self, sample):
+        question = '你是一个中文心理咨询智能化助手，以下是中国关于心理咨询师等级考试的案例分析题，请根据给出的材料回答问题。\n'
+        question += sample['background'] + '\n' + sample['question'] + '\n答案：'
+        return question, sample['answer']
 
     def extract_answer(self, response_str):
         pattern = [
@@ -137,6 +153,11 @@ class Evaluator:
         doctor_str = re.sub(r'.*?>', '', doctor_str)
         return doctor_str
 
+    def extract_qa_answer(self, response):
+        response = response.split('\n答案：')[-1].strip()
+        # response = re.sub(r'<.*?>', '', response)
+        return response
+
 
 class GLMEvaluator(Evaluator):
     def __init__(self, args):
@@ -156,17 +177,18 @@ class LLaMAEvaluator(Evaluator):
         super().__init__(args)
         self.model_name_or_path = os.path.join(self.cache_dir, 'llama_hf')
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir)
-        self.tokenizer.add_special_tokens({
-            'pad_token': self.tokenizer.eos_token,
-            'eos_token': self.tokenizer.eos_token
-        })
-        additional_special_tokens = (
-            [] if 'additional_special_tokens' not in self.tokenizer.special_tokens_map else self.tokenizer.special_tokens_map[
-                'additional_special_tokens']
-        )
-        additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
-        self.tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
         if 'dialogue' in args.subject:
+            self.tokenizer.add_special_tokens({
+                'pad_token': self.tokenizer.eos_token,
+                'eos_token': self.tokenizer.eos_token
+            })
+            additional_special_tokens = (
+                [] if 'additional_special_tokens' not in self.tokenizer.special_tokens_map else
+                self.tokenizer.special_tokens_map[
+                    'additional_special_tokens']
+            )
+            additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
+            self.tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
             with init_empty_weights():
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path)
                 num_embeddings = self.model.get_input_embeddings().num_embeddings
@@ -207,24 +229,49 @@ class BloomzEvaluator(Evaluator):
         else:
             self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir).half().cuda()
 
+    def eval_dialogue(self, data_path, save_path):
+        metric_computer = MetricComputer(self.tokenizer)
+        raw_data = read_json(data_path)
+        result = []
+        for example in tqdm(raw_data):
+            inputs, target = self.format_inputs(example)
+            self.prompt_length = len(inputs)
+            inputs = self.tokenizer.encode(inputs, return_tensors='pt').to('cuda')
+            max_new_token = 256
+            outputs = self.model.generate(inputs, max_new_tokens=max_new_token)
+            response = self.tokenizer.decode(outputs[0])
+            response_str = self.extract_response(response)
+            if save_path:
+                item = {'response': response_str.strip(), 'target': target['content']}
+                result.append(item)
+        metrics = metric_computer(result)
+        save_json(result, save_path)
+        print('result is saved.')
+        return metrics
+
+    def extract_response(self, response):
+        response = response.split('<|doctor|>')[-1].strip()
+        doctor_str = re.sub(r'<.*?>', '', response)
+        return doctor_str
+
 
 class BaiChuanEvaluator(Evaluator):
     def __init__(self, args):
         super().__init__(args)
         self.model_name_or_path = os.path.join(self.cache_dir, 'baichuan2-7b-base')
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name_or_path, cache_dir=self.cache_dir, trust_remote_code=True)
-        self.tokenizer.add_special_tokens({
-            'pad_token': self.tokenizer.eos_token,
-            'eos_token': self.tokenizer.eos_token
-        })
-        additional_special_tokens = (
-            [] if 'additional_special_tokens' not in self.tokenizer.special_tokens_map else
-            self.tokenizer.special_tokens_map[
-                'additional_special_tokens']
-        )
-        additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
-        self.tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
         if 'dialogue' in args.subject:
+            self.tokenizer.add_special_tokens({
+                'pad_token': self.tokenizer.eos_token,
+                'eos_token': self.tokenizer.eos_token
+            })
+            additional_special_tokens = (
+                [] if 'additional_special_tokens' not in self.tokenizer.special_tokens_map else
+                self.tokenizer.special_tokens_map[
+                    'additional_special_tokens']
+            )
+            additional_special_tokens = list(set(additional_special_tokens + list(SPECIAL_TOKENS.values())))
+            self.tokenizer.add_special_tokens({'additional_special_tokens': additional_special_tokens})
             with init_empty_weights():
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_name_or_path, trust_remote_code=True)
                 num_embeddings = self.model.get_input_embeddings().num_embeddings

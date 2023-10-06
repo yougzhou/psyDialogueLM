@@ -7,7 +7,7 @@ elif [ $# > 1 ]; then
   echo "usage: bash $0 [run_conf]"
   exit -1
 fi
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 mkdir -p ${save_dir}
 if [ ${log_dir:-""} != "" ]; then
   mkdir -p ${log_dir}
