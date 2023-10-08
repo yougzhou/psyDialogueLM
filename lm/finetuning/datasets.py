@@ -33,6 +33,20 @@ class PsyDialogueDataset(Dataset):
         return len(self.data)
 
 
+class GLMPromptDataSet(Dataset):
+
+    def __init__(self, data_dir, data_type='train'):
+        data_path = os.path.join(data_dir, f'glm_{data_type}.json')
+        self.all_data = read_json(data_path)
+
+    def __len__(self):
+        return len(self.all_data)
+
+    def __getitem__(self, index):
+        instance = self.all_data[index]
+        return instance
+
+
 @dataclass
 class DialogueDataCollator:
     def __init__(self, tokenizer: PreTrainedTokenizerBase,
@@ -223,32 +237,66 @@ class DialogueDataCollator:
         return batch
 
 
-class DataCollator:
-    def __init__(self, tokenizer: PreTrainedTokenizerBase):
+@dataclass
+class GLMDataCollator:
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, max_length, max_src_length, system_prefix, use_system_prefix):
         self.tokenizer = tokenizer
-        self.pad_token_id = self.tokenizer.pad_token_id
+        self.system_prefix = system_prefix
+        self.use_system_prefix = use_system_prefix
+        self.max_length = max_length
+        self.max_src_length = max_src_length
 
     def __call__(self, batch):
         new_batch = []
-        for messages in batch:
-            messages = format_pairs(messages, self.tokenizer.eos_token)
-            flatten_message = self.tokenizer("".join(messages), padding=False)
-            new_batch.append(flatten_message)
+        for sample in batch:
+            inputs, target = sample[:-1], sample[-1]
+            messages = ''.join(format_pairs(inputs, self.tokenizer.eos_token, add_initial_reply_token=True))
+            if self.use_system_prefix:
+                instruction = format_system_prefix(self.system_prefix, self.tokenizer.eos_token)
+                messages = instruction + messages
+            src_tokens = self.tokenizer.tokenize(messages)
+            if len(src_tokens) > self.max_src_length:
+                src_tokens = src_tokens[-self.max_src_length:]
 
-        lengths = [len(instance["input_ids"]) for instance in batch]
+            max_tgt_len = self.max_length - len(src_tokens) - 3
+            tgt_tokens = self.tokenizer.tokenize(target['content'])
+
+            if len(tgt_tokens) > max_tgt_len:
+                tgt_tokens = tgt_tokens[:max_tgt_len]
+
+            tokens = src_tokens + ["[gMASK]", "<sop>"] + tgt_tokens + ["<eop>"]
+            input_ids = self.tokenizer.convert_tokens_to_ids(tokens)
+            context_length = input_ids.index(self.tokenizer.bos_token_id)
+            mask_position = context_length - 1
+            labels = [-100] * context_length + input_ids[mask_position + 1:]
+
+            assert len(input_ids) == len(labels)
+            assert len(input_ids) <= self.max_length
+
+            new_batch.append({'input_ids': input_ids, 'target': labels})
+
+        lengths = [len(instance["input_ids"]) for instance in new_batch]
         batch_max_len = max(lengths)
 
         input_ids_batch, labels_batch = [], []
-        for instance in batch:
+        for instance in new_batch:
             input_ids = instance["input_ids"]
-            labels = instance["labels"]
+            labels = instance["target"]
 
             padding_len = batch_max_len - len(input_ids)
-            input_ids = input_ids + [self.pad_token_id] * padding_len
+            input_ids = input_ids + [self.tokenizer.pad_token_id] * padding_len
             labels = labels + [-100] * padding_len
 
             input_ids_batch.append(input_ids)
             labels_batch.append(labels)
 
-        return {"input_ids": torch.tensor(input_ids_batch, dtype=torch.long),
-                "labels": torch.tensor(labels_batch, dtype=torch.long)}
+        input_ids = torch.tensor(input_ids_batch, dtype=torch.long)
+        target = torch.tensor(labels_batch, dtype=torch.long)
+        label_masks = -100 * torch.ones_like(target)
+        label_masks = ~target.eq(label_masks)
+
+        return {
+            "input_ids": input_ids,
+            "target": target,
+            'label_masks': label_masks
+        }

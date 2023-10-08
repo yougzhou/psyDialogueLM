@@ -9,9 +9,8 @@ from transformers import TrainingArguments, Trainer, set_seed, PreTrainedModel
 from transformers.training_args import OptimizerNames
 from peft import get_peft_model, LoraConfig, TaskType
 
-from lm.utils import str2bool, print_args, SYSTEM_PREFIX, compute_metrics, preprocess_logits_for_metrics
-from lm.finetuning import get_loss, get_tokenizer, get_model, get_dataset, tokenizer_sanity_check, get_metrics
-from lm.finetuning.datasets import DialogueDataCollator
+from lm.utils import str2bool, print_args, compute_metrics, preprocess_logits_for_metrics
+from lm.finetuning import get_loss, get_tokenizer, get_collator, get_model, get_dataset, tokenizer_sanity_check, get_metrics
 
 
 def setup_args():
@@ -57,11 +56,9 @@ class CustomTrainer(Trainer):
             args: TrainingArguments = None,
             loss_function: str = "CrossEntropyLoss",
             poly_eps: float = 1.0,
-            train_collate_fn: Callable = None,
             **kwargs,
     ):
         super().__init__(model, args, **kwargs)
-        self.train_collate_fn = train_collate_fn
         self.loss_fct = get_loss(loss_function, poly_eps)
 
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -156,12 +153,9 @@ def main(args):
     if not args.deepspeed or args.local_rank == 0:
         tokenizer_sanity_check(tokenizer)
 
-    collate_fn = DialogueDataCollator(
-        tokenizer,
-        max_length=args.max_length,
-        pad_to_multiple_of=16,
-        use_system_prefix=False,
-        system_prefix=SYSTEM_PREFIX
+    collate_fn = get_collator(
+        args=args,
+        tokenizer=tokenizer,
     )
 
     train_set, eval_set = get_dataset(args)

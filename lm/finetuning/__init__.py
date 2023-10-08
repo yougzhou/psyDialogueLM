@@ -5,7 +5,8 @@ import torch
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
 from .datasets import PsyDialogueDataset
-from lm.utils import SPECIAL_TOKENS, create_dataset_entry_qa, CrossEntropyLoss, PolyLoss, RMCLSLoss, RMLoss, MetricComputer, default_preprocess
+from lm.utils import SPECIAL_TOKENS, create_dataset_entry_qa, CrossEntropyLoss, PolyLoss, RMCLSLoss, RMLoss, MetricComputer, default_preprocess, SYSTEM_PREFIX
+from lm.finetuning.datasets import DialogueDataCollator, GLMDataCollator, GLMPromptDataSet
 
 model_path = {
     'chatglm': 'chatglm-6b',
@@ -90,6 +91,22 @@ def tokenizer_sanity_check(tokenizer):
     print('message_indices:', message_indices)
 
 
+def get_collator(args, tokenizer):
+    collate_fn = GLMDataCollator(
+        tokenizer,
+        max_length=args.max_length,
+        use_system_prefix=False,
+        system_prefix=SYSTEM_PREFIX
+    ) if 'glm' in args.model_name else DialogueDataCollator(
+        tokenizer,
+        max_length=args.max_length,
+        pad_to_multiple_of=16,
+        use_system_prefix=False,
+        system_prefix=SYSTEM_PREFIX
+    )
+    return collate_fn
+
+
 def get_model(args, tokenizer, pad_vocab_size_to_multiple_of=16):
     dtype = torch.float32
     if args.dtype in ['fp16', 'float16']:
@@ -116,8 +133,12 @@ def get_model(args, tokenizer, pad_vocab_size_to_multiple_of=16):
 
 
 def get_dataset(args):
-    train_set = PsyDialogueDataset(args.data_dir)
-    eval_set = PsyDialogueDataset(args.data_dir, data_type='eval')
+    if 'glm' in args.model_name:
+        train_set = GLMPromptDataSet(args.data_dir)
+        eval_set = GLMPromptDataSet(args.data_dir, data_type='eval')
+    else:
+        train_set = PsyDialogueDataset(args.data_dir)
+        eval_set = PsyDialogueDataset(args.data_dir, data_type='eval')
     return train_set, eval_set
 
 
