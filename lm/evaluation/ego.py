@@ -5,7 +5,7 @@ import math
 from tqdm import tqdm
 import requests
 
-from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM, AutoConfig, LlamaForCausalLM
+from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 
 from lm.utils import read_json, read_csv, save_json, SPECIAL_TOKENS, MetricComputer

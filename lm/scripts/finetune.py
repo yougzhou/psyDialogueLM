@@ -1,13 +1,16 @@
 import argparse
 import os
 from functools import partial
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
-from transformers import TrainingArguments, Trainer, set_seed
+import torch
+from torch import nn
+from transformers import TrainingArguments, Trainer, set_seed, PreTrainedModel
 from transformers.training_args import OptimizerNames
 from peft import get_peft_model, LoraConfig, TaskType
 
 from lm.utils import str2bool, print_args, SYSTEM_PREFIX, compute_metrics, preprocess_logits_for_metrics
-from lm.finetuning import get_tokenizer, get_model, get_dataset, tokenizer_sanity_check, get_metrics
+from lm.finetuning import get_loss, get_tokenizer, get_model, get_dataset, tokenizer_sanity_check, get_metrics
 from lm.finetuning.datasets import DialogueDataCollator
 
 
@@ -45,6 +48,71 @@ def setup_args():
     parser.add_argument('--save_total_limit', type=int, default=4)
     parser.add_argument('--log_steps', type=int, default=100)
     return parser.parse_args()
+
+
+class CustomTrainer(Trainer):
+    def __init__(
+            self,
+            model: Union[PreTrainedModel, nn.Module] = None,
+            args: TrainingArguments = None,
+            loss_function: str = "CrossEntropyLoss",
+            poly_eps: float = 1.0,
+            train_collate_fn: Callable = None,
+            **kwargs,
+    ):
+        super().__init__(model, args, **kwargs)
+        self.train_collate_fn = train_collate_fn
+        self.loss_fct = get_loss(loss_function, poly_eps)
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels_mask = inputs.pop("label_masks")
+        targets = inputs.pop("targets")
+
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask", None),
+            use_cache=False,
+        )
+
+        loss = self.loss_fct(outputs.get("logits"), targets, mask=labels_mask)
+
+        return (loss, outputs) if return_outputs else loss
+
+    def _compute_loss(self, model, inputs):
+        inputs = self._prepare_inputs(inputs)
+
+        labels_mask = inputs.pop("label_masks")
+        targets = inputs.pop("targets")
+
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask", None),
+            use_cache=False,
+        )
+
+        logits = outputs.get("logits")
+
+        loss = self.loss_fct(outputs.get("logits"), targets, mask=labels_mask)
+
+        return loss, logits, targets, labels_mask
+
+    def prediction_step(
+        self,
+        model: nn.Module,
+        inputs: Dict[str, Union[torch.Tensor, Any]],
+        prediction_loss_only: bool,
+        ignore_keys: Optional[List[str]] = None,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        with torch.no_grad():
+            loss, logits, labels, labels_mask = self._compute_loss(model, inputs)
+            labels[~labels_mask.bool()] = -100  # padding_index
+
+        loss = loss.mean().detach()
+
+        if self.args.prediction_loss_only:
+            return loss, None, None
+
+        return loss, logits, labels
 
 
 def main(args):
@@ -92,11 +160,11 @@ def main(args):
         tokenizer,
         max_length=args.max_length,
         pad_to_multiple_of=16,
-        use_system_tag=True,
+        use_system_prefix=False,
         system_prefix=SYSTEM_PREFIX
     )
 
-    train_set, eval_set = get_dataset(args, tokenizer)
+    train_set, eval_set = get_dataset(args)
     metrics, preprocess_fns = get_metrics(args, tokenizer)
     model = get_model(args, tokenizer)
 
@@ -107,7 +175,7 @@ def main(args):
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
 
-    trainer = Trainer(
+    trainer = CustomTrainer(
         model=model,
         args=training_args,
         train_dataset=train_set,

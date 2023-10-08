@@ -9,7 +9,7 @@ elif [ $# > 1 ]; then
   exit -1
 fi
 
-export CUDA_VISIBLE_DEVICES=6
+export CUDA_VISIBLE_DEVICES=0
 
 mkdir -p ${output_dir}
 
@@ -25,4 +25,7 @@ python ./lm/scripts/finetune.py \
   --cache_dir ${cache_dir} \
   --output_dir ${output_dir} \
   --learning_rate ${learning_rate} \
-  --lora true
+  --lora ${lora} \
+  --log_steps ${log_steps} \
+  --eval_steps ${eval_steps} \
+  --save_steps ${save_steps}

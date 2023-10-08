@@ -5,7 +5,7 @@ import torch
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
 from .datasets import PsyDialogueDataset
-from lm.utils import SPECIAL_TOKENS, create_dataset_entry_qa, Metric
+from lm.utils import SPECIAL_TOKENS, create_dataset_entry_qa, CrossEntropyLoss, PolyLoss, RMCLSLoss, RMLoss, MetricComputer, default_preprocess
 
 model_path = {
     'chatglm': 'chatglm-6b',
@@ -13,6 +13,19 @@ model_path = {
     'baichuan': 'baichuan2-7b-base',
     'bloomz': 'bloomz_mt'
 }
+
+
+def get_loss(loss, poly_eps: float = 1.0, score_l2_reg: float = 0.001):
+    if loss == "CrossEntropyLoss":
+        return CrossEntropyLoss()
+    elif loss == "Poly":
+        return PolyLoss(epsilon=poly_eps)
+    elif loss == "RMLoss":
+        return RMLoss(beta=score_l2_reg)
+    elif loss == "RMCLSLoss":
+        return RMCLSLoss()
+    else:
+        raise ValueError(f"Loss {loss} not supported")
 
 
 def get_tokenizer(args):
@@ -57,7 +70,11 @@ def tokenizer_sanity_check(tokenizer):
     assistant_token_id = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS['Doctor'])
     print(f'{prompter_token_id=}, {assistant_token_id=}')
 
+    print('input text:', in_text)
     tr = tokenizer(in_text, max_length=1024, pad_to_max_length=False, truncation=True)
+    print('encoding result:')
+    for key, value in tr.items():
+        print(f' {key}:', value)
 
     message_indices = []
     i = -1
@@ -66,7 +83,6 @@ def tokenizer_sanity_check(tokenizer):
             i += 1
         message_indices.append(i)
 
-    print('encoding result:', tr)
     for i, xs in enumerate(tr.input_ids):
         decoded = tokenizer.decode(xs)
         print(f'{i}: {xs} -> {decoded}')
@@ -82,9 +98,9 @@ def get_model(args, tokenizer, pad_vocab_size_to_multiple_of=16):
         dtype = torch.bfloat16
     model_name_or_path = os.path.join(args.cache_dir, model_path[args.model_name])
     if 'glm' in model_name_or_path:
-        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir, torch_dtype=dtype)
+        model = AutoModel.from_pretrained(model_name_or_path, trust_remote_code=True, cache_dir=args.cache_dir, torch_dtype=dtype).half()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, cache_dir=args.cache_dir, torch_dtype=dtype)
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, cache_dir=args.cache_dir, torch_dtype=dtype, trust_remote_code=True,)
 
     num_embeddings = model.get_input_embeddings().num_embeddings
     if len(tokenizer) != num_embeddings:
@@ -99,22 +115,12 @@ def get_model(args, tokenizer, pad_vocab_size_to_multiple_of=16):
     return model
 
 
-def get_dataset(args, tokenizer):
-    train_set = PsyDialogueDataset(args.data_dir, tokenizer)
-    eval_set = PsyDialogueDataset(args.data_dir, tokenizer, data_type='eval')
+def get_dataset(args):
+    train_set = PsyDialogueDataset(args.data_dir)
+    eval_set = PsyDialogueDataset(args.data_dir, data_type='eval')
     return train_set, eval_set
 
 
-def default_preprocess(eval_pred, ignore_negative_labels=True):
-    preds, labels = eval_pred.predictions, eval_pred.label_ids
-
-    if not ignore_negative_labels:
-        return preds, labels
-
-    mask = labels > 0
-    return preds[mask], labels[mask]
-
-
 def get_metrics(args, tokenizer):
-    metrics, preprocess_fns = [Metric], [default_preprocess]
+    metrics, preprocess_fns = [MetricComputer(tokenizer)], [default_preprocess]
     return metrics, preprocess_fns

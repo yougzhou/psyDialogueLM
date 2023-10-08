@@ -2,6 +2,8 @@ import os.path
 import re
 from collections import defaultdict
 from time import sleep
+
+import evaluate
 from tqdm import tqdm
 
 import openai
@@ -22,6 +24,16 @@ def compute_metrics(eval_pred, preprocess_fns, metrics):
     return outputs
 
 
+def default_preprocess(eval_pred, ignore_negative_labels=True):
+    preds, labels = eval_pred.predictions, eval_pred.label_ids
+
+    if not ignore_negative_labels:
+        return preds, labels
+
+    mask = labels > 0
+    return preds[mask], labels[mask]
+
+
 def preprocess_logits_for_metrics(logits, labels):
     pred_ids = torch.argmax(logits, dim=-1)
     return pred_ids
@@ -30,6 +42,8 @@ def preprocess_logits_for_metrics(logits, labels):
 class MetricComputer:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
+        self.right = torch.Tensor([0])
+        self.total = torch.Tensor([0])
 
     def format_pred(self, inputs):
         response, target = [], []
@@ -73,6 +87,11 @@ class MetricComputer:
                 etp_score[n] += -(v + 0.0) / total * (np.log(v + 0.0) - np.log(total))
             div_score[n] = (len(counter[n].values()) + 0.0) / total
         return div_score[2]
+
+    def compute(self, predictions, references):
+        self.right += (predictions == references).masked_fill(references.eq(-100), 0).sum().item()
+        self.total += (references != -100).sum().item()
+        return {'accuracy': (self.right / self.total).item()}
 
     def __call__(self, inputs):
         response, target = self.format_pred(inputs)

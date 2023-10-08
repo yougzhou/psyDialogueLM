@@ -166,7 +166,7 @@ def format_system_prefix(prefix, eos_token):
 
 
 def format_pairs(
-    pairs: list[str],
+    pairs: list[dict],
     eos_token: str,
     add_initial_reply_token: bool = False,
 ) -> list[str]:
