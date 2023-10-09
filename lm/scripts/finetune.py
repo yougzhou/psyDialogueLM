@@ -1,12 +1,18 @@
 import argparse
+import logging
 import os
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import torch
+import datasets
 from torch import nn
+from torch.utils.data import DataLoader
 from transformers import TrainingArguments, Trainer, set_seed, PreTrainedModel
+from transformers.trainer_pt_utils import IterableDatasetShard
+from transformers.trainer_utils import seed_worker
 from transformers.training_args import OptimizerNames
+from transformers.utils import is_datasets_available
 from peft import get_peft_model, LoraConfig, TaskType
 
 from lm.utils import str2bool, print_args, compute_metrics, preprocess_logits_for_metrics
@@ -54,12 +60,17 @@ class CustomTrainer(Trainer):
             self,
             model: Union[PreTrainedModel, nn.Module] = None,
             args: TrainingArguments = None,
+            sampler: torch.utils.data.sampler.Sampler = None,
             loss_function: str = "CrossEntropyLoss",
             poly_eps: float = 1.0,
+            train_collate_fn: Callable = None,
             **kwargs,
     ):
         super().__init__(model, args, **kwargs)
+        self.train_collate_fn = train_collate_fn
+        # By default CrossEntropyLoss ignores padding_index -100, but just in case use our own loss_fct
         self.loss_fct = get_loss(loss_function, poly_eps)
+        self.sampler = sampler
 
     def compute_loss(self, model, inputs, return_outputs=False):
         labels_mask = inputs.pop("label_masks")
@@ -94,11 +105,11 @@ class CustomTrainer(Trainer):
         return loss, logits, targets, labels_mask
 
     def prediction_step(
-        self,
-        model: nn.Module,
-        inputs: Dict[str, Union[torch.Tensor, Any]],
-        prediction_loss_only: bool,
-        ignore_keys: Optional[List[str]] = None,
+            self,
+            model: nn.Module,
+            inputs: Dict[str, Union[torch.Tensor, Any]],
+            prediction_loss_only: bool,
+            ignore_keys: Optional[List[str]] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         with torch.no_grad():
             loss, logits, labels, labels_mask = self._compute_loss(model, inputs)
@@ -107,9 +118,59 @@ class CustomTrainer(Trainer):
         loss = loss.mean().detach()
 
         if self.args.prediction_loss_only:
-            return loss, None, None
+            return (loss, None, None)
 
-        return loss, logits, labels
+        return (loss, logits, labels)
+
+    def get_train_dataloader(self):
+        """
+        Inject custom data sampling behaviour into training loop
+        and use custom task mixing collate function : train_collate_fn
+
+        rewrite from:
+        https://github.com/huggingface/transformers/blob/67d074874d285e616393c65a0e670088e1b6b74a/src/transformers/trainer.py#L846
+        """
+        data_collator = self.train_collate_fn
+        train_dataset = self.train_dataset
+        if is_datasets_available() and isinstance(train_dataset, datasets.Dataset):
+            train_dataset = self._remove_unused_columns(train_dataset, description="training")
+
+        if isinstance(train_dataset, torch.utils.data.IterableDataset):
+            # if we are using iterable dataset it means no weight sampling
+            # added for backward compat
+            if self.args.world_size > 1:
+                train_dataset = IterableDatasetShard(
+                    train_dataset,
+                    batch_size=self._train_batch_size,
+                    drop_last=self.args.dataloader_drop_last,
+                    num_processes=self.args.world_size,
+                    process_index=self.args.process_index,
+                )
+            return DataLoader(
+                train_dataset,
+                batch_size=self.args.per_device_train_batch_size,
+                collate_fn=data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+            )
+
+        if self.sampler is None:
+            train_sampler = self._get_train_sampler()
+        else:
+            train_sampler = self.sampler
+            logging.warning("Custom sampler found!")
+
+        dataloader = DataLoader(
+            train_dataset,
+            batch_size=self._train_batch_size,
+            sampler=train_sampler,
+            collate_fn=data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            worker_init_fn=seed_worker,
+        )
+        return dataloader
 
 
 def main(args):
@@ -117,8 +178,10 @@ def main(args):
         print_args(args)
 
     output_dir = (
-        args.output_dir if args.output_dir else f'{args.model_name}-{args.log_dir}-finetuned'
+        os.path.join(args.output_dir, f'{args.model_name}_finetuned') if args.output_dir else f'{args.model_name}-{args.log_dir}-finetuned'
     )
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
 
     optimizer = OptimizerNames.ADAMW_TORCH
 
@@ -167,6 +230,7 @@ def main(args):
             task_type=TaskType.CAUSAL_LM, inference_mode=False, r=16, lora_alpha=16, lora_dropout=0.1, bias='all'
         )
         model = get_peft_model(model, peft_config)
+        print('training the model with lora ...')
         model.print_trainable_parameters()
 
     trainer = CustomTrainer(
@@ -174,6 +238,7 @@ def main(args):
         args=training_args,
         train_dataset=train_set,
         eval_dataset=eval_set,
+        train_collate_fn=collate_fn,
         data_collator=collate_fn,
         tokenizer=tokenizer,
         compute_metrics=partial(compute_metrics, metrics=metrics, preprocess_fns=preprocess_fns),

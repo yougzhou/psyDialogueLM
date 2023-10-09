@@ -1,6 +1,7 @@
 import os
 import math
 
+import evaluate
 import torch
 from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
@@ -95,7 +96,8 @@ def get_collator(args, tokenizer):
     collate_fn = GLMDataCollator(
         tokenizer,
         max_length=args.max_length,
-        use_system_prefix=False,
+        max_src_length=args.max_length - 256,
+        use_system_prefix=True,
         system_prefix=SYSTEM_PREFIX
     ) if 'glm' in args.model_name else DialogueDataCollator(
         tokenizer,
@@ -143,5 +145,5 @@ def get_dataset(args):
 
 
 def get_metrics(args, tokenizer):
-    metrics, preprocess_fns = [MetricComputer(tokenizer)], [default_preprocess]
+    metrics, preprocess_fns = [evaluate.load('../.cache/metrics/accuracy.py')], [default_preprocess]
     return metrics, preprocess_fns

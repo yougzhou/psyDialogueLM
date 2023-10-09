@@ -297,6 +297,6 @@ class GLMDataCollator:
 
         return {
             "input_ids": input_ids,
-            "target": target,
+            "targets": target,
             'label_masks': label_masks
         }
